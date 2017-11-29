@@ -1,0 +1,148 @@
+package com.wasu.game.module.player.service;
+
+import com.wasu.game.domain.RoomInf;
+import com.wasu.game.domain.response.RoomOperationInfoResponse;
+import com.wasu.game.domain.Tip;
+
+import java.util.List;
+
+/**
+ * Created by Administrator on 2017/2/13.
+ */
+public interface OutFirstService {
+    /**
+     * 洗牌
+     *
+     * @return
+     */
+    public List<RoomOperationInfoResponse> shuffle(RoomInf roomInf);
+
+    /**
+     * 抓牌
+     *
+     * @param roomInf
+     * @param
+     * @return
+     */
+    public List<RoomOperationInfoResponse> deal(RoomInf roomInf);
+    /**
+     * 出牌
+     *
+     * @param roomInf
+     * @param
+     * @param cardNum
+     * @return
+     */
+    public List<RoomOperationInfoResponse> outHand(RoomInf roomInf, int cardNum);
+    /**
+     * 碰牌提示
+     * @param
+     * @param cardNum
+     * @param position
+     * @return
+     */
+    public Tip isPeng(Long roomId, int cardNum, int position);
+
+    /**
+     * 碰牌
+     * @param roomInf
+     * @param cardNum
+     * @param prePosition
+     * @return
+     */
+    public List<RoomOperationInfoResponse> peng(RoomInf roomInf, int cardNum,int position, int prePosition);
+
+    /**
+     * 杠牌判断
+     * @param
+     * @param cardNum
+     * @param position
+     * @return
+     */
+    public Tip isGang(Long roomId, int cardNum, int position);
+    /**
+     * 暗杠
+     * @param roomInf
+     * @param cardNum
+     * @param
+     * @return
+     */
+    public List<RoomOperationInfoResponse> anGang1(RoomInf roomInf, int cardNum,Long playerId);
+    /**
+     * 明杠
+     * @param roomInf
+     * @param cardNum
+     * @param prePosition
+     * @return
+     */
+    public  List<RoomOperationInfoResponse> mingGang(RoomInf roomInf, int cardNum, int position,int prePosition);
+    /**
+     * 判断下家是否能吃
+     * @param
+     * @param prePosition
+     * @return
+     */
+    public Tip isChi(Long roomId, int prePosition) ;
+
+    /**
+     *
+     * @param roomInf
+     * @param cards
+     * @param prePosition
+     * @return
+     */
+    List<RoomOperationInfoResponse> chi1(RoomInf roomInf,List<Integer> cards, int prePosition);
+    public Tip isAnGang(Long roomId, int cardNum, int position);
+    public List<Tip> isHu(Long roomId, int cardNum,int prePosition,int isDianPao);
+
+    /**
+     *
+     * @param
+     * @param prePositin //打牌后才听 位置以改变  这个传的前一个位置
+     * @return
+     */
+    public Tip isTing(Long roomId,int prePositin);
+    /**
+     *
+     * @param roomInf
+     * @param prePositin// 以为已出牌  听牌人的位置是前一个
+     * @return
+     */
+    public List<Tip> ting(RoomInf roomInf,int prePositin);
+    /**
+     *
+     * @param
+     * @param prePosition 被吃听人的位置
+     * @return
+     */
+    public List<Tip> isChiTing(Long roomId,int prePosition);
+    /**
+     *
+     * @param roomInf
+     * @param cards 吃牌的组合
+     * @param prePosition 被吃的 玩家的位置
+     * @return
+     */
+    public List<Tip> chiTing(RoomInf roomInf,List<Integer> cards,int currentPosition, int prePosition,int outCard);
+    /**
+     *
+     * @param
+     * @param prePosition 被碰的  玩家的位置
+     * @return
+     */
+    public List<Tip> isPengTing(Long roomId,int prePosition);
+    /**
+     *
+     * @param roomInf
+     * @param cards 碰听  打牌组合
+     * @param currentPosition  pengting 玩家的位置
+     * @param prePosition
+     * @return
+     */
+    public List<Tip> pengTing(RoomInf roomInf,List<Integer> cards,int currentPosition, int prePosition,int outCard);
+    public List<Tip> hu(RoomInf roomInf,int cardNum,int position);
+    public List<Tip> over(long roomId);
+    public Tip outTip(Long roomId);
+
+}
+

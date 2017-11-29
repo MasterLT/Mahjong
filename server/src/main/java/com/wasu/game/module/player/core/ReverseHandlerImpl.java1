@@ -1,0 +1,133 @@
+package com.wasu.game.module.player.core;
+
+import com.wasu.game.domain.PlayerST;
+import com.wasu.game.domain.RoomInf;
+import com.wasu.game.entity.SessionManager;
+import com.wasu.game.domain.Tip;
+import com.wasu.game.enums.CardType;
+import com.wasu.game.enums.OperationType;
+import com.wasu.game.enums.PlayerType;
+import com.wasu.game.module.CardCmd;
+import com.wasu.game.module.player.handler.PlayerHandlerImpl;
+import com.wasu.game.quarz.QuarzManager;
+import com.wasu.game.quarz.job.PopJob;
+import com.wasu.game.quarz.job.PushJob;
+import org.apache.log4j.Logger;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.stereotype.Component;
+import org.springframework.util.CollectionUtils;
+
+import java.util.List;
+
+/**
+ * Created by Administrator on 2017/2/9.
+ */
+@Component("reverseHandler")
+public class ReverseHandlerImpl implements LinkedHandler {
+
+    private static Logger logger = Logger.getLogger(ReverseHandlerImpl.class);
+
+    private static LinkedHandler linkedHandler = null;
+    @Autowired
+    ReverseCardUtils reverseCardUtils;
+
+    public static LinkedHandler build() {
+        if (linkedHandler == null)
+            linkedHandler = SessionManager.applicationContext.getBean(ReverseHandlerImpl.class);
+        return linkedHandler;
+    }
+
+    @Override
+    public void pop(long roomId, Integer outCard) {
+        RoomInf room = SessionManager.getRoom(roomId);
+        //发牌计算杠听
+        if (outCard == null && /*CardCmd.SendCard == room.getOption()*/isFirstRound(room)) {
+            //封装提示(听)
+            reverseCardUtils.setCardTips1(roomId, null);
+        }
+        //发送所有提示信息
+        List<Tip> tips = room.getTips();
+        if (tips != null && tips.size() > 0) {
+            logger.info("获取提示:"+tips);
+            reverseCardUtils.getCardTips(roomId, tips);
+            return;
+        }
+        //如果听牌则起牌
+        if (outCard == null && room.getPlayerByPosition(room.getCurrent()).getStatus() == PlayerType.TING.getType()) {
+            changeOption(roomId, CardCmd.ZHUAPAI);
+            push(roomId);
+            return;
+        }
+        //未传outCard只发提示
+        if (outCard == null) {
+            //发送出牌提示
+            reverseCardUtils.outHandTip(roomId);
+            return;
+        }
+        //出牌
+        outCard = reverseCardUtils.playCard(roomId, outCard);
+        //封装提示(暗杠、听)
+        reverseCardUtils.setPlayCardTips(roomId, outCard);
+        //抓牌
+        push(roomId);
+    }
+
+    @Override
+    public void push(long roomId) {
+        RoomInf room = SessionManager.getRoom(roomId);
+        PlayerST current = room.getPlayerByPosition(room.getCurrent());
+        //若点炮则结束
+        List<Tip> tips = SessionManager.getRoom(roomId).getTips();
+        if (tips != null && tips.size() > 0) {
+            if (reverseCardUtils.getPaoTips(roomId, tips))
+                return;
+        }
+        //若听牌且当前操作为出牌则下一个用户出牌
+        if (CardCmd.CHUPAI == room.getOption()) {
+            //变化位置
+            changePosition(roomId);
+            pop(roomId, null);
+            return;
+        }
+        //抓牌
+        if (room.getLeftDeskCardNum() < 9) {//剩余8张流局
+            //结束
+            reverseCardUtils.end(roomId);
+            return;
+        }
+        int inCard = reverseCardUtils.getCard(roomId);
+        //封装提示(暗杠、听、自摸)
+        reverseCardUtils.setCardTips(roomId, inCard);
+        //若当前用户听牌
+        if (current.getStatus() == PlayerType.TING.getType()) {
+            try {
+                Thread.sleep(1000);
+            } catch (InterruptedException e) {
+                e.printStackTrace();
+            }
+            pop(roomId, inCard);
+            return;
+        }
+        //不是暗杠后抓牌,改变位置
+        changePosition(roomId);
+        //出牌提示
+        pop(roomId, null);
+    }
+
+    private void changePosition(long roomId) {
+        RoomInf roomInf = SessionManager.getRoom(roomId);
+        roomInf.nextOne();
+        SessionManager.setRoom(roomInf);
+    }
+
+    private void changeOption(long roomId, Short opt) {
+        RoomInf roomInf = SessionManager.getRoom(roomId);
+        roomInf.setOption(opt);
+        SessionManager.setRoom(roomInf);
+    }
+
+    private boolean isFirstRound(RoomInf room) {
+        List list = room.getPlayerByPosition(room.getCurrent()).getCardsByType(CardType.OUT.getType());
+        return CollectionUtils.isEmpty(list);
+    }
+}

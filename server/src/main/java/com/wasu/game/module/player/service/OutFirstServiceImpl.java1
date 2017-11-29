@@ -1,0 +1,795 @@
+package com.wasu.game.module.player.service;
+
+
+import com.google.common.collect.Lists;
+import com.google.common.collect.Maps;
+import com.wasu.game.entity.*;
+import com.wasu.game.enums.CardType;
+import com.wasu.game.enums.heb.HuType;
+import com.wasu.game.enums.PlayerType;
+import com.wasu.game.enums.TipType;
+import com.wasu.game.exception.ErrorCodeException;
+import com.wasu.game.module.CardCmd;
+import com.wasu.game.module.player.untils.CardUntils;
+import com.wasu.game.module.player.untils.CreateTipUtilsOfOutFrist;
+import com.wasu.game.module.player.untils.RoomOperationResponseUntils;
+import com.wasu.game.module.player.untils.TipInfoUtils;
+import com.wasu.game.rules.HuRuleUtils;
+import com.wasu.game.utilities.RoomRuleUtils;
+import org.apache.log4j.Logger;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.stereotype.Component;
+import org.springframework.util.CollectionUtils;
+
+import java.util.*;
+
+import static com.wasu.game.entity.SessionManager.save;
+import static com.wasu.game.utilities.RoomRuleUtils.calculateStand;
+
+/**
+ * Created by Administrator on 2017/2/13.
+ */
+@Component
+public class OutFirstServiceImpl implements OutFirstService {
+    @Autowired
+    private CreateTipUtilsOfOutFrist createTipUtils;
+
+    private static Logger logger = Logger.getLogger(OutFirstServiceImpl.class);
+    @Override
+    public List<RoomOperationInfoResponse> shuffle(RoomInf roomInf) {
+        LinkedList<PlayerST> playerSTs = roomInf.getPlayers();
+        //返回发牌数据的list
+        List<RoomOperationInfoResponse> roomOperationInfoResponses = Lists.newArrayList();
+        List<Integer> all = new ArrayList<Integer>();
+        Queue<Integer> allQueue = new LinkedList<Integer>();
+        Map<Integer, Map<Integer, List<Integer>>> cardMap = new HashMap<Integer, Map<Integer, List<Integer>>>();
+        allQueue = Mahjong.shuffle(0);// 洗牌 存入all中
+        Map<Integer, List<Integer>> positionAndCards = Maps.newHashMap();
+        for (int j = 0; j < playerSTs.size(); j++) {
+            PlayerST playerST = playerSTs.get(j);
+            List<Integer> list = new ArrayList<Integer>();
+            for (int i = 0; i < 13; i++) {
+                list.add(allQueue.poll());
+            }
+            positionAndCards.put(playerST.getPosition(), list);
+
+            Card card = new Card(CardType.SHOUPAI.getType(),list,list.size());
+            List<Card> cards = Lists.newArrayList(card);
+            playerSTs.get(j).setCards(cards);
+        }
+        roomOperationInfoResponses = RoomOperationResponseUntils.returnShuffe(allQueue, positionAndCards, playerSTs);
+        //发牌时就设置成发牌命令  其他设置成下一个
+        setNextOption(CardCmd.SendCard,roomInf);
+        roomInf.setLeftDeskCards(allQueue);
+        roomInf.setPlayers(playerSTs);
+        roomInf.setCurrent(roomInf.getBanker());
+        roomInf.setLeftDeskCardNum(allQueue.size());
+        SessionManager.setRoom(roomInf);
+        return roomOperationInfoResponses;
+    }
+
+    /**
+     * 抓牌
+     * @param roomInf
+     * @return
+     */
+    @Override
+    public List<RoomOperationInfoResponse> deal(RoomInf roomInf) {
+        List<RoomOperationInfoResponse> roomOperationInfoResponses=null;
+        //所以玩家
+        List<PlayerST> playerSTs=roomInf.getPlayers();
+        //抓牌玩家的位置
+        int currentPosition = roomInf.getCurrent();
+        //剩余的牌
+        Queue<Integer> allQueue=roomInf.getLeftDeskCards();
+        //发出的牌
+        int card = allQueue.poll();
+        //抓牌的玩家
+        PlayerST currentPlayer=roomInf.getPlayerByPosition(currentPosition);
+        //改变抓牌玩家的手牌
+        currentPlayer.addCard(Lists.<Integer>newArrayList(card),CardType.SHOUPAI.getType());
+        //改变抓入的牌
+        currentPlayer.addCard(card,CardType.IN.getType());
+        roomOperationInfoResponses= RoomOperationResponseUntils.returnDeal(allQueue,Lists.<Integer>newArrayList(card),playerSTs,currentPlayer);
+
+        setNextOption(roomInf.getOption(),roomInf);
+        save(roomInf);
+        logger.info("起牌:" + roomInf.getPlayerByPosition(roomInf.getCurrent()));
+        return roomOperationInfoResponses;
+    }
+
+    @Override
+    public List<RoomOperationInfoResponse> outHand(RoomInf roomInf, int cardNum) {
+        List<RoomOperationInfoResponse> roomOperationInfoResponses=null;
+        //所以玩家
+        List<PlayerST> playerSTs=roomInf.getPlayers();
+        //打牌玩家的位置
+        int position = roomInf.getCurrent();
+        //打牌的玩家
+        PlayerST currentPlayer=roomInf.getPlayerByPosition(position);
+        //删除该玩家的手牌
+        currentPlayer.deleteCard(cardNum, CardType.SHOUPAI.getType());
+        //把牌添加到已出的牌里面
+        currentPlayer.addCard(cardNum,CardType.YICHUPAI.getType());
+        currentPlayer.addCard(cardNum, CardType.OUT.getType());
+        roomOperationInfoResponses= RoomOperationResponseUntils.returnOutHand(roomInf.getLeftDeskCards(),Lists.newArrayList(cardNum),playerSTs,currentPlayer);
+
+        Integer s = null;
+        if (currentPlayer.getStatus() == PlayerType.TING.getType() && currentPlayer.getCircleAfterTing() != null) {
+            s = currentPlayer.getCircleAfterTing() == 0 ? currentPlayer.getCircleAfterTing() + 1 : null;
+        }
+        currentPlayer.setCircleAfterTing(s);
+
+        if (currentPlayer.getStatus()==PlayerType.TING.getType()){
+            setNextOption(CardCmd.ZHUAPAI,roomInf);
+        }else {
+            setNextOption(roomInf.getOption(),roomInf);
+        }
+        save(roomInf);
+        logger.info("打牌:" + roomInf.getPlayerByPosition(roomInf.getCurrent()));
+        return roomOperationInfoResponses;
+    }
+
+    /**
+     *
+     * @param roomId
+     * @param cardNum
+     * @param position 打牌人的位置
+     * @return
+     */
+    @Override
+    public Tip isPeng(Long roomId, int cardNum, int position) {
+        RoomInf roomInf = SessionManager.getRoom(roomId);
+        PlayerST playerInfo = Mahjong.isPeng(roomInf.getPlayers(), cardNum, position);
+        // 产生返回方法时所需要的参数
+        Tip tip = null;
+        if (playerInfo != null) {
+            Map<Integer, Map<Integer, List<Integer>>> map = new HashMap<Integer, Map<Integer, List<Integer>>>();
+            Map<Integer, List<Integer>> pengMap = new HashMap<Integer, List<Integer>>();
+            List<Integer> pengCardList = new ArrayList<Integer>();
+            pengCardList.add(cardNum);
+            pengCardList.add(cardNum);
+            pengMap.put(TipType.CANPENGPAI.getType(), pengCardList);
+            map.put(playerInfo.getPosition(), pengMap);
+            tip = createTipUtils.createTip(playerInfo, map, roomInf.returnBeforePositon(), TipType.CANPENGPAI.getType());
+
+        }
+        return tip;
+    }
+
+
+    /**
+     *
+     * @param roomInf
+     * @param cardNum
+     * @param position 碰牌人的位置
+     * @param prePosition 出牌人的位置
+     * @return
+     */
+    @Override
+    public List<RoomOperationInfoResponse> peng(RoomInf roomInf, int cardNum, int position, int prePosition) {
+        List<RoomOperationInfoResponse> roomOperationInfoResponses=null;
+        //被碰的玩家
+        PlayerST prePlayerST = roomInf.getPlayerByPosition(prePosition);
+        //在上家已打的牌中删除此牌
+        prePlayerST.deleteCard(cardNum, CardType.YICHUPAI.getType());
+        //被碰的牌
+        List<Integer> outCardList=Lists.newArrayList(cardNum);
+        //当前玩家
+        PlayerST currentPlayerST = roomInf.getPlayerByPosition(position);
+        //从手牌中删除 两个牌
+        currentPlayerST.deleteCard(cardNum, CardType.SHOUPAI.getType());
+        currentPlayerST.deleteCard(cardNum, CardType.SHOUPAI.getType());
+        //碰的组合
+        List<Integer> pengCardList=Lists.newArrayList(cardNum,cardNum,cardNum);
+        //把碰牌加到碰牌数组中
+        currentPlayerST.addCard(pengCardList,CardType.PENGPAI.getType());
+
+        Map<Integer, Map<Integer, List<Integer>>> map = new HashMap<Integer, Map<Integer, List<Integer>>>();
+        //被碰的玩家
+        Map<Integer, List<Integer>> preTypeMap = new HashMap<Integer, List<Integer>>();
+        preTypeMap.put(CardType.BEPENG.getType(), outCardList);
+        map.put(prePosition, preTypeMap);// 被碰的类型
+        //当前碰的玩家
+        Map<Integer, List<Integer>> currentTypeMap = new HashMap<Integer, List<Integer>>();
+        currentTypeMap.put(CardType.PENGPAI.getType(), pengCardList);
+        map.put(position, currentTypeMap);// 碰的类型
+        roomOperationInfoResponses=RoomOperationResponseUntils.returnRoomOperationInfoResponses(roomInf,map);
+        //李涛那边不需要  自己用来过度的
+        roomInf.setOption(CardCmd.PENG);
+
+        //碰后的位置  这边改
+        roomInf.setCurrent(position);
+        roomInf.setTips(null);
+        roomInf.setTempTips(null);
+
+        save(roomInf);
+        logger.info("被碰牌:" + roomInf.getPlayerByPosition(prePosition));
+        logger.info("碰牌:" + roomInf.getPlayerByPosition(roomInf.getCurrent()));
+        return roomOperationInfoResponses;
+    }
+
+    @Override
+    public Tip isGang(Long roomId, int cardNum, int position){
+        RoomInf roomInf = SessionManager.getRoom(roomId);
+        PlayerST playerInfo = Mahjong.isMingGang(roomInf.getPlayers(), cardNum, position);
+        // 产生返回方法时所需要的参数
+        Tip tip = null;
+        if (playerInfo != null) {
+            Map<Integer, Map<Integer, List<Integer>>> map = new HashMap<Integer, Map<Integer, List<Integer>>>();
+            Map<Integer, List<Integer>> cardMap = new HashMap<Integer, List<Integer>>();
+            //杠的
+            List<Integer> gangCardList = new ArrayList<Integer>();
+            gangCardList.add(cardNum);
+            gangCardList.add(cardNum);
+            gangCardList.add(cardNum);
+            cardMap.put(TipType.CANMINGGANG.getType(), gangCardList);
+
+            map.put(playerInfo.getPosition(), cardMap);
+            tip = createTipUtils.createTip(playerInfo, map, roomInf.returnBeforePositon(), TipType.CANMINGGANG.getType());
+        }
+        return tip;
+    }
+    @Override
+    public List<RoomOperationInfoResponse> anGang1(RoomInf roomInf, int cardNum,Long playerId) {
+        List<RoomOperationInfoResponse> roomOperationInfoResponses=null;
+        int anGangPosition=roomInf.getPositionById(playerId);
+        //当前玩家
+        PlayerST anGangPlayerST = roomInf.getPlayerByPosition(anGangPosition);
+        //从手牌中删除 杠牌
+        anGangPlayerST.deleteCard(cardNum, CardType.SHOUPAI.getType());
+        anGangPlayerST.deleteCard(cardNum, CardType.SHOUPAI.getType());
+        anGangPlayerST.deleteCard(cardNum, CardType.SHOUPAI.getType());
+        anGangPlayerST.deleteCard(cardNum, CardType.SHOUPAI.getType());
+        //杠的组合
+        List<Integer> gangCardList=Lists.newArrayList(cardNum,cardNum,cardNum,cardNum);
+        //把杠牌加到杠牌数组中
+        anGangPlayerST.addCard(gangCardList,CardType.ANGANG.getType());
+
+        Map<Integer, Map<Integer, List<Integer>>> map = new HashMap<Integer, Map<Integer, List<Integer>>>();
+        //当前杠的玩家
+        Map<Integer, List<Integer>> currentTypeMap = new HashMap<Integer, List<Integer>>();
+        currentTypeMap.put(CardType.ANGANG.getType(), gangCardList);
+        map.put(anGangPosition, currentTypeMap);// 杠的类型
+        roomOperationInfoResponses=RoomOperationResponseUntils.returnRoomOperationInfoResponses(roomInf,map);
+//        roomInf.setTips(null);
+        roomInf.setCurrent(anGangPosition);
+        roomInf.setOption(CardCmd.ANGANG);
+        roomInf.setTempTips(null);
+        save(roomInf);
+        logger.info("暗杠牌:" + anGangPlayerST);
+        return roomOperationInfoResponses;
+    }
+
+    @Override
+    public List<RoomOperationInfoResponse> mingGang(RoomInf roomInf, int cardNum, int position, int prePosition) {
+        List<RoomOperationInfoResponse> roomOperationInfoResponses=null;
+        //被杠的玩家
+        PlayerST prePlayerST = roomInf.getPlayerByPosition(prePosition);
+        //在上家已打的牌中删除此牌
+        prePlayerST.deleteCard(cardNum, CardType.YICHUPAI.getType());
+        //被杠的牌
+        List<Integer> outCardList=Lists.newArrayList(cardNum);
+        //当前玩家
+        PlayerST currentPlayerST = roomInf.getPlayerByPosition(position);
+        //从手牌中删除牌
+        currentPlayerST.deleteCard(cardNum, CardType.SHOUPAI.getType());
+        currentPlayerST.deleteCard(cardNum, CardType.SHOUPAI.getType());
+        currentPlayerST.deleteCard(cardNum, CardType.SHOUPAI.getType());
+        //杠的组合
+        List<Integer> gangCardList=Lists.newArrayList(cardNum,cardNum,cardNum,cardNum);
+        //把杠牌加到杠牌数组中
+        currentPlayerST.addCard(gangCardList,CardType.MINGGANG.getType());
+
+        Map<Integer, Map<Integer, List<Integer>>> map = new HashMap<Integer, Map<Integer, List<Integer>>>();
+        //被杠的玩家
+        Map<Integer, List<Integer>> preTypeMap = new HashMap<Integer, List<Integer>>();
+        preTypeMap.put(CardType.BEMINGGANG.getType(), outCardList);
+        map.put(prePosition, preTypeMap);// 被杠的类型
+        //当前杠的玩家
+        Map<Integer, List<Integer>> currentTypeMap = new HashMap<Integer, List<Integer>>();
+        currentTypeMap.put(CardType.MINGGANG.getType(), gangCardList);
+        map.put(position, currentTypeMap);// 杠的类型
+        roomOperationInfoResponses=RoomOperationResponseUntils.returnRoomOperationInfoResponses(roomInf,map);
+
+
+        roomInf.setTips(null);
+        roomInf.setTempTips(null);
+        roomInf.setCurrent(position);
+//        roomInf.setOption(CardCmd.GANG);
+        save(roomInf);
+        logger.info("被杠牌:" + roomInf.getPlayerByPosition(prePosition));
+        logger.info("明杠牌:" + roomInf.getPlayerByPosition(roomInf.getCurrent()));
+        return roomOperationInfoResponses;
+    }
+
+    @Override
+    public Tip isChi(Long roomId, int prePosition) {
+        RoomInf roomInf = SessionManager.getRoom(roomId);
+        Tip tip = null;
+        //可以吃的玩家的位置
+        int chiPosition = roomInf.getNext(prePosition);
+        PlayerST playerST = roomInf.getPlayerByPosition(chiPosition);//根据位置 得到玩家信息
+        List<List<Integer>> chiList = Mahjong.isChi(roomInf, prePosition, playerST);
+        if (chiList != null && chiList.size() > 0) {
+            Map<Integer, Integer> map = new HashMap<Integer, Integer>();
+            map.put(playerST.getPosition(), TipType.CANCHIPAI.getType());
+            tip = createTipUtils.createTip(playerST, map, chiList, roomInf.returnBeforePositon(), TipType.CANCHIPAI.getType());
+        }
+        //被吃的玩家
+        PlayerST prePlayerST=roomInf.getPlayerByPosition(prePosition);
+        //被吃的牌
+        int cardNum = prePlayerST.getCardsByType(CardType.YICHUPAI.getType()).get(prePlayerST.getCardsByType(CardType.YICHUPAI.getType()).size() - 1);
+        if (tip!=null){
+            Map<Integer,List<Integer>> map=Maps.newHashMap();
+            //被吃的牌
+            map.put(CardType.BECHI.getType(),Lists.<Integer>newArrayList(cardNum));
+            TipInfo tipInfo= TipInfoUtils.createTipInfo(prePlayerST,map);
+            tip.getTipInfos().add(tipInfo);
+        }
+        return tip;
+    }
+
+    @Override
+    public List<RoomOperationInfoResponse> chi1(RoomInf roomInf, List<Integer> cards, int prePosition) {
+        List<RoomOperationInfoResponse> roomOperationInfoResponses=null;
+        //被吃的玩家
+        PlayerST prePlayerST = roomInf.getPlayerByPosition(prePosition);
+        //得到被吃的那张牌
+        List<Integer> yiChuPai = prePlayerST.getCardsByType(CardType.YICHUPAI.getType());
+        int cardNum = yiChuPai.get(yiChuPai.size() - 1);
+        //在上家已打的牌中删除此牌
+        prePlayerST.deleteCard(cardNum, CardType.YICHUPAI.getType());
+        //当前玩家
+        PlayerST currentPlayerST = roomInf.getPlayerByPosition(roomInf.getNext(prePosition));
+        //从手牌中删除 两个牌
+        currentPlayerST.deleteCard(cards.get(0), CardType.SHOUPAI.getType());
+        currentPlayerST.deleteCard(cards.get(1), CardType.SHOUPAI.getType());
+
+        //吃后的组合
+        List<Integer> chiList = new ArrayList<Integer>();
+        chiList.addAll(cards);
+        chiList.add(cardNum);
+        //把吃的牌  加入到吃的 数组中
+        currentPlayerST.addCard(chiList, CardType.CHIPAI.getType());
+
+        //出牌玩家 出的牌
+        List<Integer> outCardList = new ArrayList<Integer>();
+        outCardList.add(cardNum);
+        Map<Integer, List<Integer>> preTypeMap = new HashMap<Integer, List<Integer>>();//出牌的类型和牌
+        Map<Integer, List<Integer>> currentTypeMap = new HashMap<Integer, List<Integer>>();//吃牌的类型和牌
+        Map<Integer, Map<Integer, List<Integer>>> map = new HashMap<Integer, Map<Integer, List<Integer>>>();//用来构造返回的
+        preTypeMap.put(CardType.BECHI.getType(), outCardList);
+        currentTypeMap.put(CardType.CHIPAI.getType(), chiList);
+        map.put(prePosition, preTypeMap);
+        map.put(roomInf.getCurrent(), currentTypeMap);
+        roomOperationInfoResponses=RoomOperationResponseUntils.returnRoomOperationInfoResponses(roomInf, map);
+
+        roomInf.setTips(null);
+        roomInf.setTempTips(null);
+        roomInf.setOption(CardCmd.CHI);
+        save(roomInf);
+
+        logger.info("被吃牌:" + roomInf.getPlayerByPosition(prePosition));
+        logger.info("吃牌:" + roomInf.getPlayerByPosition(roomInf.getCurrent()));
+        return roomOperationInfoResponses;
+    }
+
+    @Override
+    public Tip isAnGang(Long roomId, int cardNum, int position) {
+        RoomInf roomInf = SessionManager.getRoom(roomId);
+        Tip tip = null;
+        PlayerST playerST = roomInf.getPlayerByPosition(position);
+
+        List<Integer> isAnGang = Mahjong.isAnGang(playerST, cardNum);
+        if (!CollectionUtils.isEmpty(isAnGang)) {
+            Map<Integer, Map<Integer, List<Integer>>> map = new HashMap<Integer, Map<Integer, List<Integer>>>();
+            Map<Integer, List<Integer>> anGangMap = new HashMap<Integer, List<Integer>>();
+            anGangMap.put(TipType.CANANGANG.getType(), isAnGang);
+            map.put(playerST.getPosition(), anGangMap);
+            tip = createTipUtils.createTip(playerST, map, position, TipType.CANANGANG.getType());
+        }
+        return tip;
+    }
+
+    @Override
+    public List<Tip> isHu(Long roomId, int cardNum, int prePosition,int isDianpao) {
+        RoomInf roomInf = SessionManager.getRoom(roomId);
+        List<Tip> tips = new ArrayList<Tip>();
+        //可以胡的人
+        List<PlayerST> huPlayers = new ArrayList<PlayerST>();
+        List<Integer> rules = Mahjong.getRules(roomInf.getRule());
+        if (prePosition == roomInf.getCurrent()&&isDianpao==0) {  //自摸的时候
+                PlayerST playerST = roomInf.getPlayerByPosition(roomInf.getCurrent());
+                if (playerST.getStatus() == PlayerType.TING.getType()) {
+                    HuInfo huInfo = playerST.getHuInfo();
+                    if (huInfo != null && !CollectionUtils.isEmpty(huInfo.getHuCards())) { //是否保存要赢的牌
+                        //其他赢得类型
+                        int type = HuRuleUtils.ziMoType(roomInf, rules, playerST.getPlayerId(), cardNum);
+                        if (type != -1) {
+                            huInfo.setHuType(type);
+                            huPlayers.add(playerST);
+                        }
+                    } else {
+                        throw new ErrorCodeException(ResultCode.UNWIN);  //t听过  huInfo一定不为null  不然报错
+                    }
+                    if (RoomRuleUtils.isLouHu(roomInf, playerST.getPlayerId(), rules) != -1) {  //-1表示不是漏胡
+                        playerST.getHuInfo().setHuType(HuType.LOUHU.getType());
+                        huPlayers.add(playerST);
+                    }
+                }
+
+        } else { //别人打的牌  判断点炮
+            for (int i = 0; i < roomInf.getPlayers().size(); i++) {
+                PlayerST playerST = roomInf.getPlayers().get(i);
+                if (playerST.getStatus() != PlayerType.TING.getType())
+                    continue;
+                if (playerST.getPosition()==prePosition)
+                    continue;
+                HuInfo huInfo = playerST.getHuInfo();//获取听牌玩家  赢牌信息
+                if (huInfo != null && !CollectionUtils.isEmpty(huInfo.getHuCards())) {  //是否保存要赢的牌
+                    //其他赢得类型
+                    if (huInfo.getHuCards().contains(cardNum)) {
+                        PlayerST loser = roomInf.getPlayerByPosition(prePosition);
+                        roomInf.setPao(loser.getPlayerId());
+                        if (huInfo.isJia()) {
+                            huInfo.setHuType(HuType.DIANPAOJIA.getType());
+                        } else {
+                            huInfo.setHuType(HuType.DIANPAO.getType());
+                        }
+                        huPlayers.add(playerST);
+                    }
+                } else {
+                    throw new ErrorCodeException(ResultCode.UNWIN);  //报错
+                }
+            }
+        }
+        if (huPlayers != null && huPlayers.size() > 0) {
+            for (int i = 0; i < huPlayers.size(); i++) {
+                Map<Integer, Map<Integer, List<Integer>>> map = new HashMap<Integer, Map<Integer, List<Integer>>>();
+                Map<Integer, List<Integer>> huMap = new HashMap<Integer, List<Integer>>();
+                List<Integer> huList = new ArrayList<Integer>();
+                huList.add(cardNum);
+                huMap.put(CardType.BEHU.getType(), huList);
+                map.put(prePosition, huMap);
+                Tip tip = null;
+                if (HuType.LOUHU.getType() == huPlayers.get(i).getHuInfo().getHuType()) {
+                    huMap.put(CardType.BEHU.getType(), Lists.<Integer>newArrayList(roomInf.getBaoCard()));//把不是漏胡的 map 被胡的牌覆盖
+                    map.put(prePosition, huMap);
+                    tip = createTipUtils.createTip(huPlayers.get(i), map, prePosition, TipType.CANLOUHU.getType());
+                } else {
+                    tip = createTipUtils.createTip(huPlayers.get(i), map, prePosition, TipType.CANHU.getType());
+                }
+                tips.add(tip);
+            }
+        }
+        save(roomInf);
+        return tips;
+    }
+
+    @Override
+    public Tip isTing(Long roomId, int prePositin) {
+        RoomInf roomInf = SessionManager.getRoom(roomId);
+        Tip tip = null;
+        List<Integer> cards = new ArrayList<Integer>();
+        List<Integer> shouPai = new ArrayList<Integer>();
+        PlayerST playerST = roomInf.getPlayerByPosition(prePositin);
+        shouPai = playerST.getCardsByType(CardType.SHOUPAI.getType());
+        cards.addAll(shouPai);
+        List<Integer> outCards = new ArrayList<Integer>();
+
+        String[] rules = roomInf.getRule();
+        boolean ting = Mahjong.isTingOfOutFrist( playerST, rules);
+        if (ting) {
+            Map<Integer, List<Integer>> map = Maps.newHashMap();
+            map.put(TipType.OUTOFTING.getType(), outCards);
+            tip = createTipUtils.getTingTip(playerST, map, TipType.CANTING.getType());
+        }
+        save(roomInf);
+        return tip;
+    }
+
+    @Override
+    public List<Tip> ting(RoomInf roomInf, int prePositin) {
+        List<Tip> tips = new ArrayList<Tip>();
+        PlayerST playerST = roomInf.getPlayerByPosition(prePositin);
+        /**
+         * 把赢的牌保存起来
+         *
+         */
+        Map<Integer, HuInfo> tempHuInfo = playerST.getTempHuInfo();
+        if (!CollectionUtils.isEmpty(tempHuInfo)) {
+            HuInfo huInfo = tempHuInfo.get(0);
+            if (huInfo == null || CollectionUtils.isEmpty(huInfo.getHuCards())) {
+                throw new ErrorCodeException(ResultCode.UNTING);
+            }
+            playerST.setHuInfo(huInfo);
+        }
+        playerST.setCircleAfterTing(0);
+        //改变玩家的状态
+        playerST.setStatus(PlayerType.TING.getType());
+        tips = createTipUtils.createTips(roomInf, playerST, TipType.TING.getType());
+        // 保存宝牌
+        if (roomInf.getBaoCard() == null || roomInf.getBaoCard() == 0) {
+            int bao = roomInf.getLeftDeskCards().poll();
+            roomInf.setBaoCard(bao);
+        }
+        playerST.setCircleAfterTing(1);
+        roomInf.setTempTips(null);
+        save(roomInf);
+        logger.info("听牌:" + playerST);
+        return tips;
+    }
+
+    @Override
+    public List<Tip> isChiTing(Long roomId, int prePosition) {
+        RoomInf roomInf = SessionManager.getRoom(roomId);
+        List<Tip> tips = new ArrayList<Tip>();
+        //被吃的玩家
+        PlayerST prePlayerST = roomInf.getPlayerByPosition(prePosition);
+        List<Integer> outCardsOfPreplayer = prePlayerST.getCardsByType(CardType.YICHUPAI.getType());
+        int cardNum = outCardsOfPreplayer.get(outCardsOfPreplayer.size() - 1);
+        Map<Integer, List<List<Card>>> map = Mahjong.isChiTing(roomInf.getPlayers(), cardNum, prePosition, roomInf.getRule());
+        if (!CollectionUtils.isEmpty(map)) {
+            tips = createTipUtils.createTip(roomInf, map, TipType.CANCHITING.getType());
+        }
+        //被吃的牌
+        Map<Integer, List<Integer>> typeAndCardsMap = Maps.newHashMap();
+        //被吃的牌
+        typeAndCardsMap.put(CardType.BECHI.getType(), Lists.<Integer>newArrayList(cardNum));
+        //被吃的玩家和被吃牌的tipInfo
+        TipInfo tipInfo = TipInfoUtils.createTipInfo(prePlayerST, typeAndCardsMap);
+        //给每个要吃听的玩家 加上要吃的那张牌的信息
+        if (!CollectionUtils.isEmpty(tips)) {
+            for (Tip tip : tips) {
+                tip.getTipInfos().add(tipInfo);
+            }
+        }
+        save(roomInf);
+        return tips;
+    }
+
+    @Override
+    public List<Tip> chiTing(RoomInf roomInf, List<Integer> cards, int currentPosition, int prePosition, int outCard) {
+        List<Tip> tips = Lists.newArrayList();
+        //被吃的玩家 和被吃的牌
+        PlayerST playerST = roomInf.getPlayerByPosition(prePosition);
+        List<Integer> outCardsOfPreplayer = playerST.getCardsByType(CardType.YICHUPAI.getType());
+        int cardNum = outCardsOfPreplayer.get(outCardsOfPreplayer.size() - 1);
+        //把出的牌从被吃玩家的  出牌数组中删除
+        playerST.deleteCard(cardNum, CardType.YICHUPAI.getType());
+        //吃听的玩家
+        PlayerST currentPlayer = roomInf.getPlayerByPosition(currentPosition);
+
+        /**
+         * 判断赢的牌 并保存
+         */
+        currentPlayer.setStatus(PlayerType.TING.getType());
+        List<ChiOrPengTingInfo> chiOrPengTingInfos = currentPlayer.getChiOrPengTingInfos();
+        if (CollectionUtils.isEmpty(chiOrPengTingInfos)) {
+            throw new ErrorCodeException(ResultCode.UNTING);
+        }
+        for (ChiOrPengTingInfo chiOrPengTingInfo : chiOrPengTingInfos) {
+            if (!chiOrPengTingInfo.isEqual(cards)) {
+                continue;
+            }
+//            for(OutAndWin w:chiOrPengTingInfo.getOutAndWins()){
+//                if(w.getOutCard()==outCard){
+//                    currentPlayer.setHuCard(w.getWinCards());
+//                    break;
+//                }
+//            }
+            for (OutAndWin w : chiOrPengTingInfo.getOutAndWins()) {
+                if (w.getOutCard() == outCard) {
+                    currentPlayer.setHuInfo(w.getHuInfo());
+                    break;
+                }
+            }
+        }
+        if (currentPlayer.getHuInfo() == null || CollectionUtils.isEmpty(currentPlayer.getHuInfo().getHuCards())) {
+            throw new ErrorCodeException(ResultCode.UNTING);
+        }
+//        if (CollectionUtils.isEmpty(currentPlayer.getHuCard())) {
+//            throw new ErrorCodeException(ResultCode.UNTING);
+//        }
+        for (int i = 0; i < cards.size(); i++) {
+            currentPlayer.deleteCard(cards.get(i), CardType.SHOUPAI.getType());//删除手中吃的牌
+        }
+        cards.add(cardNum);
+        currentPlayer.addCard(cards, CardType.CHIPAI.getType());//把 吃牌加到吃牌玩家的 吃牌数组
+        currentPlayer.setCircleAfterTing(0);//设置听后打牌几次  用就是判定是不是听当圈
+        currentPlayer.setStatus(PlayerType.TING.getType());//保存玩家听牌状态
+        List<Integer> beiChi = Lists.newArrayList(cardNum);//被吃的牌的list
+
+        TipInfo tipInfo1 = new TipInfo(currentPlayer, PlayerType.TING.getType(), CardUntils.creatCardList(cards, CardType.CHIPAI.getType()));
+        TipInfo tipInfo2 = new TipInfo(playerST, PlayerType.BASE.getType(), CardUntils.creatCardList(beiChi, CardType.BECHI.getType()));
+        List<TipInfo> tipInfos = Lists.newArrayList(tipInfo1, tipInfo2);
+
+        tips = createTipUtils.getChiOrPengTingResult(roomInf, tipInfos);
+
+        roomInf.setCurrent(currentPosition);
+        currentPlayer.setChiOrPengTingInfos(null);
+        roomInf.setTempTips(null);
+
+        roomInf.setTips(null);
+        roomInf.setOption(CardCmd.CHITING);
+        //保存宝牌
+        if (roomInf.getBaoCard() == null || roomInf.getBaoCard() == 0) {
+            int bao = roomInf.getLeftDeskCards().poll();
+            roomInf.setBaoCard(bao);
+        }
+        currentPlayer.setCircleAfterTing(0);
+        save(roomInf);
+        logger.info("被吃听牌:" + roomInf.getPlayerByPosition(prePosition));
+        logger.info("吃听牌:" + roomInf.getPlayerByPosition(roomInf.getCurrent()));
+        return tips;
+    }
+    @Override
+    public List<Tip> isPengTing(Long roomId, int prePosition) {
+        RoomInf roomInf = SessionManager.getRoom(roomId);
+        List<Tip> tip = new ArrayList<Tip>();
+        PlayerST playerST = roomInf.getPlayerByPosition(prePosition);
+        List<Integer> outCardsOfPreplayer = playerST.getCardsByType(CardType.YICHUPAI.getType());
+        int cardNum = outCardsOfPreplayer.get(outCardsOfPreplayer.size() - 1);
+
+        Map<Integer, List<List<Card>>> map = Mahjong.isPengTing(roomInf.getPlayers(), cardNum, prePosition, roomInf.getRule());
+        if (!CollectionUtils.isEmpty(map)) {
+            tip = createTipUtils.createTip(roomInf, map, TipType.CANPENGTING.getType());
+        }
+        save(roomInf);
+        return tip;
+    }
+
+    @Override
+    public List<Tip> pengTing(RoomInf roomInf, List<Integer> cards, int currentPosition, int prePosition, int outCard) {
+        List<Tip> tips = null;
+        //被碰的玩家 和被碰的牌
+        PlayerST playerST = roomInf.getPlayerByPosition(prePosition);
+        List<Integer> outCardsOfPreplayer = playerST.getCardsByType(CardType.YICHUPAI.getType());
+        int pengPai = outCardsOfPreplayer.get(outCardsOfPreplayer.size() - 1);
+        //把出的牌从被吃玩家的  出牌数组中删除
+        playerST.deleteCard(pengPai, CardType.YICHUPAI.getType());
+        //碰听的玩家
+        PlayerST currentPlayer = roomInf.getPlayerByPosition(currentPosition);
+        /**
+         * 判断赢的牌 并保存
+         */
+        currentPlayer.setStatus(PlayerType.TING.getType());
+        List<ChiOrPengTingInfo> chiOrPengTingInfos = currentPlayer.getChiOrPengTingInfos();
+        if (CollectionUtils.isEmpty(chiOrPengTingInfos)) {
+            throw new ErrorCodeException(ResultCode.UNTING);
+        }
+        for (ChiOrPengTingInfo chiOrPengTingInfo : chiOrPengTingInfos) {
+            if (!chiOrPengTingInfo.isEqual(cards)) {
+                continue;
+            }
+            for (OutAndWin w : chiOrPengTingInfo.getOutAndWins()) {
+                if (w.getOutCard() == outCard) {
+                    currentPlayer.setHuInfo(w.getHuInfo());
+                    break;
+                }
+            }
+        }
+        if (currentPlayer.getHuInfo() == null || CollectionUtils.isEmpty(currentPlayer.getHuInfo().getHuCards())) {
+            throw new ErrorCodeException(ResultCode.UNTING);
+        }
+        for (int i = 0; i < cards.size(); i++) {
+            currentPlayer.deleteCard(cards.get(i), CardType.SHOUPAI.getType());//删除手中吃的牌
+        }
+        cards.add(pengPai);
+        currentPlayer.addCard(cards, CardType.PENGPAI.getType());//把 peng牌加到玩家的 碰牌数组
+        currentPlayer.setStatus(PlayerType.TING.getType());//保存玩家听牌状态
+        currentPlayer.setCircleAfterTing(0);//设置听后打牌几次  用就是判定是不是听当圈
+        List<Integer> beiChi = Lists.newArrayList(pengPai);//被碰的牌的list
+
+        TipInfo tipInfo1 = new TipInfo(currentPlayer, PlayerType.TING.getType(), CardUntils.creatCardList(cards, CardType.PENGPAI.getType()));
+        TipInfo tipInfo2 = new TipInfo(playerST, PlayerType.BASE.getType(), CardUntils.creatCardList(beiChi, CardType.BEPENG.getType()));
+        List<TipInfo> tipInfos = Lists.newArrayList(tipInfo1, tipInfo2);
+
+        tips = createTipUtils.getChiOrPengTingResult(roomInf, tipInfos);
+
+
+        currentPlayer.setStatus(PlayerType.TING.getType());
+        roomInf.setCurrent(currentPosition);
+        roomInf.setOption(CardCmd.PENGTING);
+        roomInf.setTips(null);
+        roomInf.setTempTips(null);
+        currentPlayer.setChiOrPengTingInfos(null);
+        //保存宝牌
+        if (roomInf.getBaoCard() == null || roomInf.getBaoCard() == 0) {
+            int bao = roomInf.getLeftDeskCards().poll();
+            roomInf.setBaoCard(bao);
+        }
+        currentPlayer.setCircleAfterTing(0);
+        save(roomInf);
+        logger.info("被碰听牌:" + roomInf.getPlayerByPosition(prePosition));
+        logger.info("碰听牌:" + roomInf.getPlayerByPosition(roomInf.getCurrent()));
+        return tips;
+    }
+    @Override
+    public List<Tip> hu(RoomInf roomInf, int cardNum, int position) {
+        PlayerST playerST = roomInf.getPlayerByPosition(position);
+        playerST.addCard(cardNum, CardType.BEHU.getType());
+        //赢家最后抓的那张牌
+        List<Integer> shouPai=playerST.getCardsByType(CardType.SHOUPAI.getType());
+        int inCard=shouPai.get(shouPai.size()-1);
+
+        roomInf.setWin(playerST.getPlayerId());
+        playerST.setStatus(PlayerType.HU.getType());
+        roomInf.setTips(null);
+        roomInf.setTempTips(null);
+        //设置胡的那张牌
+        //自摸的情况下 删除手里摸到的那张牌
+        if (playerST.getHuInfo().getHuType() != HuType.DIANPAOJIA.getType() && playerST.getHuInfo().getHuType() != HuType.DIANPAO.getType()) {
+            if (playerST.getHuInfo().getHuType()==HuType.LOUHU.getType()){
+            }else {
+                playerST.deleteCard(inCard, CardType.SHOUPAI.getType());
+            }
+        }
+        roomInf.setHuCard(cardNum);
+        //设置站立  非站立
+        calculateStand(roomInf);
+        save(roomInf);
+        return null;
+    }
+    @Override
+    public List<Tip> over(long roomId) {
+        RoomInf roomInf = SessionManager.getRoom(roomId);
+        List<Tip> tips = new ArrayList<Tip>();
+        tips = createTipUtils.creatTips(roomInf);
+        clearRoomInfo(roomInf);
+        return tips;
+    }
+    /**
+     * 提示出牌
+     * @param roomId
+     * @return
+     */
+    @Override
+    public Tip outTip(Long roomId) {
+        Tip tip=null;
+        RoomInf roomInf= SessionManager.getRoom(roomId);
+        int currentPosition=roomInf.getCurrent();
+        PlayerST playerST=roomInf.getPlayerByPosition(currentPosition);
+        TipInfo tipInfo=new TipInfo(playerST);
+        tip=new Tip(playerST, Lists.<TipInfo>newArrayList(tipInfo));
+        setNextOption(CardCmd.READYCHUPAI,roomInf);
+        SessionManager.save(roomInf);
+        logger.info("出牌提示:" + tip);
+        return tip;
+    }
+    private void setNextOption(short cardCmd,RoomInf roomInf){
+        if (cardCmd==CardCmd.SendCard){ //发牌时 还是设置发牌
+            roomInf.setOption(CardCmd.SendCard);
+        }else if (cardCmd==CardCmd.READYCHUPAI&&roomInf.getOption()==CardCmd.SendCard){
+            roomInf.setOption(CardCmd.CHUPAI);
+        }else if (cardCmd==CardCmd.PENG||cardCmd==CardCmd.PENGTING||cardCmd==CardCmd.CHI||cardCmd==CardCmd.CHITING){
+            roomInf.setOption(CardCmd.CHUPAI);//碰、吃、碰听和吃听后都是下一家出牌
+        }else if (cardCmd==CardCmd.ZHUAPAI){
+            roomInf.setOption(CardCmd.CHUPAI);
+        }else if (cardCmd==CardCmd.CHUPAI){
+            roomInf.setOption(CardCmd.ZHUAPAI);
+        }else if (CardCmd.ANGANG==cardCmd){
+            roomInf.setOption(CardCmd.CHUPAI);
+        }
+    }
+
+    private void clearRoomInfo(RoomInf roomInf) {
+        roomInf.setLeftDeskCardNum(0);
+        roomInf.setLeftDeskCards(null);
+        roomInf.setHuCard(null);
+        roomInf.setStatus(0);
+        roomInf.setTips(null);
+        roomInf.setPao(null);
+        roomInf.setBaoCard(null);
+        for (int i = 0; i < roomInf.getPlayers().size(); i++) {
+            roomInf.getPlayers().get(i).setState(false);
+            roomInf.getPlayers().get(i).setCards(null);
+            roomInf.getPlayers().get(i).setChiOrPengTingInfos(null);
+            roomInf.getPlayers().get(i).setHuInfo(null);
+            roomInf.getPlayers().get(i).setTempHuInfo(null);
+            roomInf.getPlayers().get(i).setStatus(PlayerType.BASE.getType());
+        }
+        SessionManager.setRoom(roomInf);
+    }
+}
